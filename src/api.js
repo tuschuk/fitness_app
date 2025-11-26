@@ -192,6 +192,7 @@ export async function getWorkouts(params = {}) {
   if (params.startDate) queryParams.append('startDate', params.startDate);
   if (params.endDate) queryParams.append('endDate', params.endDate);
   if (params.workoutType) queryParams.append('workoutType', params.workoutType);
+  if (params.programId) queryParams.append('programId', params.programId);
   if (params.limit) queryParams.append('limit', params.limit);
   if (params.page) queryParams.append('page', params.page);
   
@@ -318,6 +319,30 @@ export function getApiBaseUrl() {
 
 export function isAuthenticated() {
   return !!getToken();
+}
+
+// AI Model Classification API
+export async function classifyFitnessLevel(fitnessData) {
+  try {
+    const response = await request('/api/classify', {
+      method: 'POST',
+      body: {
+        gender: fitnessData.gender,
+        squat: parseFloat(fitnessData.squat) || 0,
+        bench: parseFloat(fitnessData.bench) || 0,
+        deadlift: parseFloat(fitnessData.deadlift) || 0,
+        bodyweight: parseFloat(fitnessData.bodyweight) || 0,
+        trainingYears: parseFloat(fitnessData.trainingYears) || 0
+      }
+    });
+    
+    // Return the classification response from the backend
+    // Backend should return: { level, confidence, total, wilks, ... }
+    return response.classification || response;
+  } catch (error) {
+    console.error('Error calling classification API:', error);
+    throw error;
+  }
 }
 
 // Test backend connection

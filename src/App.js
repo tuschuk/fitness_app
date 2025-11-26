@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, Dumbbell, Target, Calendar, AlertCircle, Check, ArrowRight, Download, TrendingUp, Save, CheckCircle, ArrowLeft } from 'lucide-react';
+import { Activity, Dumbbell, Target, Calendar, AlertCircle, Check, ArrowRight, Download, TrendingUp, Save, CheckCircle, ArrowLeft, User, LogOut, History, X, Archive } from 'lucide-react';
 import { 
   saveProfile as apiSaveProfile, 
   saveWorkoutPlan, 
@@ -12,6 +12,8 @@ import {
   getCurrentUser,
   getProfile as apiGetProfile,
   updateProfile as apiUpdateProfile,
+  classifyFitnessLevel as apiClassifyFitnessLevel,
+  getWorkouts,
   isAuthenticated,
   getUser,
   clearAuth
@@ -48,6 +50,13 @@ const FitnessAIApp = () => {
   const [selectedWorkoutDay, setSelectedWorkoutDay] = useState(null);
   const [completedDays, setCompletedDays] = useState(new Set());
   const [isResetting, setIsResetting] = useState(false);
+  const [showProfileDropdown, setShowProfileDropdown] = useState(false);
+  const [showClassificationHistory, setShowClassificationHistory] = useState(false);
+  const [showWorkoutHistory, setShowWorkoutHistory] = useState(false);
+  const [showPastPrograms, setShowPastPrograms] = useState(false);
+  const [classificationHistory, setClassificationHistory] = useState([]);
+  const [workoutHistory, setWorkoutHistory] = useState([]);
+  const [pastPrograms, setPastPrograms] = useState([]);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -475,6 +484,248 @@ const FitnessAIApp = () => {
     setWorkoutPreferences({ trainingDays: 3, goal: 'strength' });
     setResults(null);
     setWorkoutInputs({});
+    setShowProfileDropdown(false);
+  };
+
+  const handleViewClassificationHistory = async () => {
+    setShowProfileDropdown(false);
+    setShowClassificationHistory(true);
+    // Fetch classification history from backend
+    if (isLoggedIn && profile) {
+      try {
+        const profileResponse = await apiGetProfile();
+        if (profileResponse?.profile || profileResponse) {
+          const profileData = profileResponse.profile || profileResponse;
+          // Get classification history array from backend
+          const history = profileData.classificationHistory || 
+                         profileData.profile?.classificationHistory ||
+                         (profileData.previousClassification ? [profileData.previousClassification] : []);
+          setClassificationHistory(history);
+        }
+      } catch (error) {
+        console.error('Error fetching classification history:', error);
+        // Fallback to checking profile state
+        const history = profile?.classificationHistory || 
+                       profile?.profile?.classificationHistory ||
+                       (profile?.previousClassification ? [profile.previousClassification] : []);
+        setClassificationHistory(history);
+      }
+    }
+  };
+
+  const handleViewWorkoutHistory = async () => {
+    setShowProfileDropdown(false);
+    setShowWorkoutHistory(true);
+    // Fetch completed workout days from backend
+    if (isLoggedIn) {
+      try {
+        // First, fetch profile to get workout template
+        let currentProfile = profile;
+        if (!currentProfile || !currentProfile.workoutProgram) {
+          try {
+            const profileResponse = await apiGetProfile();
+            if (profileResponse?.profile || profileResponse) {
+              const profileData = profileResponse.profile || profileResponse;
+              currentProfile = { ...currentProfile, ...profileData };
+              setProfile(currentProfile);
+            }
+          } catch (err) {
+            console.error('Error fetching profile for workout history:', err);
+          }
+        }
+        
+        // Get workout day inputs which contain completed workout data
+        const inputsResponse = await getWorkoutDayInputs();
+        const workoutDayInputs = inputsResponse?.workoutDayInputs || 
+                                 (inputsResponse?.success && inputsResponse?.workoutDayInputs ? inputsResponse.workoutDayInputs : 
+                                  (typeof inputsResponse === 'object' && !inputsResponse.success ? inputsResponse : null));
+        
+        if (workoutDayInputs && typeof workoutDayInputs === 'object') {
+          // Get workout template
+          const template = results?.template || 
+                          currentProfile?.workoutProgram || 
+                          currentProfile?.profile?.workoutProgram;
+          
+          // Convert workout day inputs to workout history format
+          const completedWorkouts = [];
+          Object.entries(workoutDayInputs).forEach(([dayLabel, dayData]) => {
+            if (dayData && typeof dayData === 'object') {
+              // Check if this day has any inputs (completed) - exclude metadata fields
+              const exerciseInputs = Object.keys(dayData).filter(key => 
+                key !== 'completedAt' && key !== '_metadata' && key !== 'timestamp'
+              );
+              const hasInputs = exerciseInputs.length > 0 && exerciseInputs.some(key => {
+                const input = dayData[key];
+                return input && (input.weight || input.notes || (typeof input === 'object' && (input.weight || input.notes)));
+              });
+              
+              // Also check for completion timestamp
+              const hasCompletionTimestamp = dayData.completedAt || dayData.timestamp || dayData._metadata?.completedAt;
+              
+              if (hasInputs || hasCompletionTimestamp) {
+                // Get exercises from the template
+                const exercises = template?.workouts?.[dayLabel] || [];
+                
+                // Get completion timestamp
+                const completionTimestamp = dayData.completedAt || 
+                                          dayData.timestamp || 
+                                          dayData._metadata?.completedAt;
+                
+                completedWorkouts.push({
+                  dayLabel,
+                  exercises,
+                  inputs: dayData,
+                  completedAt: completionTimestamp || new Date().toISOString(),
+                  sortKey: completionTimestamp ? new Date(completionTimestamp).getTime() : Date.now()
+                });
+              }
+            }
+          });
+          
+          // Sort by completion date (most recent first)
+          completedWorkouts.sort((a, b) => b.sortKey - a.sortKey);
+          setWorkoutHistory(completedWorkouts);
+        } else {
+          setWorkoutHistory([]);
+        }
+      } catch (error) {
+        console.error('Error fetching workout history:', error);
+        setWorkoutHistory([]);
+      }
+    }
+  };
+
+  const handleViewPastPrograms = async () => {
+    setShowProfileDropdown(false);
+    setShowPastPrograms(true);
+    // Fetch past programs from backend
+    if (isLoggedIn) {
+      try {
+        const profileResponse = await apiGetProfile();
+        if (profileResponse?.profile || profileResponse) {
+          const profileData = profileResponse.profile || profileResponse;
+          
+          // Get past programs array from profile
+          const pastProgramsList = profileData.pastPrograms || 
+                                   profileData.profile?.pastPrograms || 
+                                   [];
+          
+          // Also include current program if it exists
+          const programs = [...pastProgramsList];
+          
+          // Check if there's a current program that should be included
+          const currentProgram = profileData.workoutProgram || 
+                                 profileData.profile?.workoutProgram ||
+                                 (profileData.selectedProgramId ? {
+                                   id: profileData.selectedProgramId,
+                                   name: profileData.selectedProgramName || profileData.profile?.selectedProgramName || 'Current Program',
+                                   isCurrent: true
+                                 } : null);
+          
+          if (currentProgram && !programs.some(p => p.id === currentProgram.id)) {
+            programs.unshift({
+              ...currentProgram,
+              isCurrent: true
+            });
+          }
+          
+          // Sort by date (most recent first) if dates are available
+          programs.sort((a, b) => {
+            const dateA = a.usedAt || a.date || 0;
+            const dateB = b.usedAt || b.date || 0;
+            return dateB - dateA;
+          });
+          
+          setPastPrograms(programs);
+        } else {
+          setPastPrograms([]);
+        }
+      } catch (error) {
+        console.error('Error fetching past programs:', error);
+        setPastPrograms([]);
+      }
+    }
+  };
+
+  const handleLoadPastProgram = async (program) => {
+    if (!program || !program.id) {
+      console.error('Invalid program data');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      
+      // Set the program as the current template
+      setResults({
+        classification: results?.classification || null,
+        template: program
+      });
+
+      // Fetch workout entries for this program from backend
+      // Try to get entries filtered by program ID
+      let programInputs = {};
+      let programEntries = [];
+
+      try {
+        // Try to get workout entries for this specific program
+        const workoutsResponse = await getWorkouts({ programId: program.id });
+        if (workoutsResponse?.workouts && Array.isArray(workoutsResponse.workouts)) {
+          programEntries = workoutsResponse.workouts;
+        }
+
+        // Fetch workout day inputs - backend should return inputs for this program
+        const inputsResponse = await getWorkoutDayInputs();
+        if (inputsResponse?.workoutDayInputs) {
+          const allInputs = inputsResponse.workoutDayInputs;
+          
+          // Filter inputs to only include days that match this program's workout days
+          if (program.workouts && typeof program.workouts === 'object') {
+            const programDayLabels = Object.keys(program.workouts);
+            programDayLabels.forEach(dayLabel => {
+              if (allInputs[dayLabel]) {
+                programInputs[dayLabel] = allInputs[dayLabel];
+              }
+            });
+          } else {
+            // If program structure is different, use all inputs
+            programInputs = allInputs;
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching program entries:', error);
+        // Continue anyway with empty inputs
+      }
+
+      // Set the workout inputs for this program
+      setWorkoutInputs(programInputs);
+
+      // Mark completed days based on inputs
+      const completed = new Set();
+      Object.keys(programInputs).forEach(dayLabel => {
+        const dayInputs = programInputs[dayLabel];
+        if (dayInputs && typeof dayInputs === 'object') {
+          const hasInputs = Object.values(dayInputs).some(input => 
+            input && (input.weight || input.notes)
+          );
+          if (hasInputs) {
+            completed.add(dayLabel);
+          }
+        }
+      });
+      setCompletedDays(completed);
+
+      // Close the modal and navigate to program view
+      setShowPastPrograms(false);
+      setCurrentStep(4);
+      setSelectedWorkoutDay(null);
+      
+    } catch (error) {
+      console.error('Error loading past program:', error);
+      alert('Failed to load program. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleCreateProfile = async (e) => {
@@ -486,8 +737,9 @@ const FitnessAIApp = () => {
     }
   };
 
-  // Classification logic (mimics Python K-means classifier)
-  const classifyFitnessLevel = (data) => {
+  // Fallback classification logic (rule-based approximation)
+  // Used only if backend AI model (fitness_app_AI_model) is unavailable
+  const classifyFitnessLevelFallback = (data) => {
     const total = parseFloat(data.squat) + parseFloat(data.bench) + parseFloat(data.deadlift);
     const wilks = total / parseFloat(data.bodyweight);
     const years = parseFloat(data.trainingYears);
@@ -1267,29 +1519,128 @@ const FitnessAIApp = () => {
     }
     setLoading(true);
 
-    setTimeout(async () => {
-      const classification = classifyFitnessLevel(fitnessData);
+    try {
+      // Use backend AI model for classification
+      const classification = await apiClassifyFitnessLevel(fitnessData);
       setResults({ ...results, classification });
+      
       // Persist profile metrics/classification to backend
       if (isLoggedIn && profile) {
         try {
+          // Save current classification to history before updating with new one
+          const oldClassification = profile.classification || profile.profile?.classification;
+          const oldMetrics = profile.metrics || profile.profile?.metrics;
+          
+          // Get existing classification history array
+          const existingHistory = profile.classificationHistory || 
+                                 profile.profile?.classificationHistory || 
+                                 [];
+          
+          // Create history entry from current classification
+          const historyEntry = oldClassification ? {
+            level: oldClassification.level,
+            confidence: oldClassification.confidence,
+            total: oldClassification.total,
+            wilks: oldClassification.wilks,
+            ...oldClassification,
+            metrics: oldMetrics || oldClassification.metrics,
+            timestamp: new Date().toISOString(),
+            ...(oldMetrics && !oldClassification.total && {
+              total: (parseFloat(oldMetrics.squat || 0) + parseFloat(oldMetrics.bench || 0) + parseFloat(oldMetrics.deadlift || 0))
+            }),
+            ...(oldMetrics && oldClassification.total && !oldClassification.wilks && {
+              wilks: oldMetrics.bodyweight ? (oldClassification.total / parseFloat(oldMetrics.bodyweight)).toFixed(2) : null
+            })
+          } : null;
+          
+          // Add current classification to history array (most recent first)
+          const updatedHistory = historyEntry 
+            ? [historyEntry, ...existingHistory].slice(0, 50)
+            : existingHistory;
+          
           const updatedProfile = {
             ...profile,
             metrics: { ...fitnessData },
-            classification
+            classification,
+            classificationHistory: updatedHistory
           };
-          await apiUpdateProfile({ 
+          
+          const updateData = { 
             metrics: fitnessData,
-            classification 
-          });
+            classification,
+            classificationHistory: updatedHistory
+          };
+          
+          await apiUpdateProfile(updateData);
           setProfile(updatedProfile);
         } catch (error) {
           console.error('Error updating profile:', error);
         }
       }
-      setLoading(false);
       setCurrentStep(2);
-    }, 800);
+    } catch (error) {
+      console.error('Error calling classification API, using fallback:', error);
+      // Fallback to local classification if backend fails
+      const classification = classifyFitnessLevelFallback(fitnessData);
+      setResults({ ...results, classification });
+      
+      // Still try to save to profile if logged in
+      if (isLoggedIn && profile) {
+        try {
+          // Save current classification to history before updating with new one
+          const oldClassification = profile.classification || profile.profile?.classification;
+          const oldMetrics = profile.metrics || profile.profile?.metrics;
+          
+          // Get existing classification history array
+          const existingHistory = profile.classificationHistory || 
+                                 profile.profile?.classificationHistory || 
+                                 [];
+          
+          // Create history entry from current classification
+          const historyEntry = oldClassification ? {
+            level: oldClassification.level,
+            confidence: oldClassification.confidence,
+            total: oldClassification.total,
+            wilks: oldClassification.wilks,
+            ...oldClassification,
+            metrics: oldMetrics || oldClassification.metrics,
+            timestamp: new Date().toISOString(),
+            ...(oldMetrics && !oldClassification.total && {
+              total: (parseFloat(oldMetrics.squat || 0) + parseFloat(oldMetrics.bench || 0) + parseFloat(oldMetrics.deadlift || 0))
+            }),
+            ...(oldMetrics && oldClassification.total && !oldClassification.wilks && {
+              wilks: oldMetrics.bodyweight ? (oldClassification.total / parseFloat(oldMetrics.bodyweight)).toFixed(2) : null
+            })
+          } : null;
+          
+          // Add current classification to history array (most recent first)
+          const updatedHistory = historyEntry 
+            ? [historyEntry, ...existingHistory].slice(0, 50)
+            : existingHistory;
+          
+          const updatedProfile = {
+            ...profile,
+            metrics: { ...fitnessData },
+            classification,
+            classificationHistory: updatedHistory
+          };
+          
+          const updateData = { 
+            metrics: fitnessData,
+            classification,
+            classificationHistory: updatedHistory
+          };
+          
+          await apiUpdateProfile(updateData);
+          setProfile(updatedProfile);
+        } catch (updateError) {
+          console.error('Error updating profile:', updateError);
+        }
+      }
+      setCurrentStep(2);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleWorkoutSubmit = (e) => {
@@ -1412,6 +1763,15 @@ const FitnessAIApp = () => {
         };
       });
       
+      // Add completion timestamp to day inputs
+      const completionTimestamp = new Date().toISOString();
+      dayInputs.completedAt = completionTimestamp;
+      dayInputs._metadata = {
+        completedAt: completionTimestamp,
+        programId: results?.template?.id || null,
+        programName: results?.template?.name || null
+      };
+      
       // Save all inputs for this day at once
       try {
         await saveWorkoutDayInputs({ [dayLabel]: dayInputs });
@@ -1429,7 +1789,8 @@ const FitnessAIApp = () => {
             exerciseLabel: exercise,
             weight: entryInputs.weight || '',
             notes: entryInputs.notes || '',
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            completedAt: completionTimestamp
           };
           return saveWorkoutEntry(payload);
         });
@@ -1856,7 +2217,8 @@ const FitnessAIApp = () => {
                               <th className="text-left py-4 px-4 text-slate-200 font-bold uppercase text-sm">EXERCISE</th>
                               <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">SETS</th>
                               <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">REPS</th>
-                              <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">WEIGHT</th>
+                              <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">PROJECTED WEIGHT</th>
+                              <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">ACTUAL WEIGHT</th>
                               <th className="text-left py-4 px-4 text-slate-200 font-bold uppercase text-sm">NOTES</th>
                             </tr>
                           </thead>
@@ -1871,19 +2233,25 @@ const FitnessAIApp = () => {
                                   <td className="py-4 px-4 text-white font-semibold">{parsed.name}</td>
                                   <td className="py-4 px-4 text-center text-slate-200">{parsed.sets || '-'}</td>
                                   <td className="py-4 px-4 text-center text-slate-200">{parsed.reps || '-'}</td>
+                                  <td className="py-4 px-4 text-center text-slate-300">
+                                    {parsed.calculatedWeight ? (
+                                      <span className="font-medium">
+                                        {String(parsed.calculatedWeight).includes(',') 
+                                          ? `${parsed.calculatedWeight} lbs` 
+                                          : `${parsed.calculatedWeight} lbs`}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-500">-</span>
+                                    )}
+                                  </td>
                                   <td className="py-4 px-4">
                                     <input
                                       type="text"
-                                      placeholder={parsed.calculatedWeight ? `${parsed.calculatedWeight}${String(parsed.calculatedWeight).includes(',') ? ' lbs per set' : ' lbs'} (${parsed.weight})` : (parsed.weight || "Weight")}
+                                      placeholder={parsed.calculatedWeight ? `${parsed.calculatedWeight}${String(parsed.calculatedWeight).includes(',') ? ' lbs per set' : ' lbs'}` : (parsed.weight || "Weight")}
                                       className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded text-slate-200 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                                      value={(workoutInputs[dayLabel]?.[exerciseIdx]?.weight) || (parsed.calculatedWeight ? `${parsed.calculatedWeight} lbs` : '') || parsed.weight || ''}
+                                      value={(workoutInputs[dayLabel]?.[exerciseIdx]?.weight) || ''}
                                       onChange={(e) => setExerciseInput(dayLabel, exerciseIdx, 'weight', e.target.value)}
                                     />
-                                    {parsed.calculatedWeight && !workoutInputs[dayLabel]?.[exerciseIdx]?.weight && (
-                                      <span className="text-xs text-slate-400 block mt-1">
-                                        Calculated: {String(parsed.calculatedWeight).includes(',') ? `${parsed.calculatedWeight} lbs per set` : `${parsed.calculatedWeight} lbs`}
-                                      </span>
-                                    )}
                                   </td>
                                   <td className="py-4 px-4">
                                     <input
@@ -1915,7 +2283,8 @@ const FitnessAIApp = () => {
                     <th className="text-left py-4 px-4 text-slate-200 font-bold uppercase text-sm">EXERCISE</th>
                     <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">SETS</th>
                     <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">REPS</th>
-                    <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">WEIGHT</th>
+                    <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">PROJECTED WEIGHT</th>
+                    <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">ACTUAL WEIGHT</th>
                     <th className="text-left py-4 px-4 text-slate-200 font-bold uppercase text-sm">NOTES</th>
                   </tr>
                 </thead>
@@ -1928,19 +2297,25 @@ const FitnessAIApp = () => {
                         <td className="py-4 px-4 text-white font-semibold">{parsed.name}</td>
                         <td className="py-4 px-4 text-center text-slate-200">{parsed.sets || '-'}</td>
                         <td className="py-4 px-4 text-center text-slate-200">{parsed.reps || '-'}</td>
+                        <td className="py-4 px-4 text-center text-slate-300">
+                          {parsed.calculatedWeight ? (
+                            <span className="font-medium">
+                              {String(parsed.calculatedWeight).includes(',') 
+                                ? `${parsed.calculatedWeight} lbs` 
+                                : `${parsed.calculatedWeight} lbs`}
+                            </span>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </td>
                         <td className="py-4 px-4">
                           <input
                             type="text"
-                            placeholder={parsed.calculatedWeight ? `${parsed.calculatedWeight}${String(parsed.calculatedWeight).includes(',') ? ' lbs per set' : ' lbs'} (${parsed.weight})` : (parsed.weight || "Weight")}
+                            placeholder={parsed.calculatedWeight ? `${parsed.calculatedWeight}${String(parsed.calculatedWeight).includes(',') ? ' lbs per set' : ' lbs'}` : (parsed.weight || "Weight")}
                             className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded text-slate-200 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            value={(workoutInputs[dayLabel]?.[idx]?.weight) || (parsed.calculatedWeight ? `${parsed.calculatedWeight} lbs` : '') || parsed.weight || ''}
+                            value={(workoutInputs[dayLabel]?.[idx]?.weight) || ''}
                             onChange={(e) => setExerciseInput(dayLabel, idx, 'weight', e.target.value)}
                           />
-                          {parsed.calculatedWeight && !workoutInputs[dayLabel]?.[idx]?.weight && (
-                            <span className="text-xs text-slate-400 block mt-1">
-                              Calculated: {String(parsed.calculatedWeight).includes(',') ? `${parsed.calculatedWeight} lbs per set` : `${parsed.calculatedWeight} lbs`}
-                            </span>
-                          )}
                         </td>
                         <td className="py-4 px-4">
                           <input
@@ -2182,15 +2557,78 @@ const FitnessAIApp = () => {
           </div>
         )}
         {/* Header */}
-        <div className="text-center mb-8">
+        <div className="relative text-center mb-8">
+          {/* Profile Icon - Top Right */}
+          {isLoggedIn && (
+            <div className="absolute top-0 right-0">
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowProfileDropdown(!showProfileDropdown)}
+                  className="p-2 rounded-full bg-slate-700 hover:bg-slate-600 text-white transition-colors"
+                  aria-label="Profile menu"
+                >
+                  <User className="w-6 h-6" />
+                </button>
+                
+                {/* Profile Dropdown Menu */}
+                {showProfileDropdown && (
+                  <>
+                    <div 
+                      className="fixed inset-0 z-40" 
+                      onClick={() => setShowProfileDropdown(false)}
+                    ></div>
+                    <div className="absolute right-0 mt-2 w-56 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50">
+                      <div className="py-2">
+                        <button
+                          type="button"
+                          onClick={handleViewClassificationHistory}
+                          className="w-full px-4 py-2 text-left text-white hover:bg-slate-700 flex items-center gap-3 transition-colors"
+                        >
+                          <History className="w-5 h-5" />
+                          <span>Classification History</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleViewWorkoutHistory}
+                          className="w-full px-4 py-2 text-left text-white hover:bg-slate-700 flex items-center gap-3 transition-colors"
+                        >
+                          <Calendar className="w-5 h-5" />
+                          <span>Workout History</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleViewPastPrograms}
+                          className="w-full px-4 py-2 text-left text-white hover:bg-slate-700 flex items-center gap-3 transition-colors"
+                        >
+                          <Archive className="w-5 h-5" />
+                          <span>Past Programs</span>
+                        </button>
+                        <div className="border-t border-slate-700 my-1"></div>
+                        <button
+                          type="button"
+                          onClick={handleLogout}
+                          className="w-full px-4 py-2 text-left text-red-400 hover:bg-slate-700 flex items-center gap-3 transition-colors"
+                        >
+                          <LogOut className="w-5 h-5" />
+                          <span>Log Out</span>
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+          
           <div className="flex items-center justify-center gap-3 mb-4">
             <Dumbbell className="w-12 h-12 text-blue-400" />
             <h1 className="text-4xl sm:text-5xl font-bold text-white">
               AI Fitness System
             </h1>
           </div>
-          <div className="flex justify-center mb-3">
-            {!isLoggedIn ? (
+          {!isLoggedIn && (
+            <div className="flex justify-center mb-3">
               <button
                 type="button"
                 onClick={handleLogin}
@@ -2198,16 +2636,8 @@ const FitnessAIApp = () => {
               >
                 Log In
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded font-semibold"
-              >
-                Log Out
-              </button>
-            )}
-          </div>
+            </div>
+          )}
           <p className="text-xl text-blue-200">
             Powered by K-means Classification & Decision Tree AI
           </p>
@@ -2651,6 +3081,380 @@ const FitnessAIApp = () => {
         {/* Individual Workout Day Page */}
         {currentStep === 4 && results?.template && selectedWorkoutDay && (
           renderWorkoutDay(selectedWorkoutDay.day, selectedWorkoutDay.exercises)
+        )}
+
+        {/* Classification History Modal */}
+        {showClassificationHistory && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowClassificationHistory(false)}>
+            <div className="absolute inset-0 bg-black/60"></div>
+            <div className="relative z-10 w-full max-w-2xl bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setShowClassificationHistory(false)}
+                className="absolute top-3 right-3 text-slate-300 hover:text-white bg-slate-700/60 hover:bg-slate-700 rounded-full w-8 h-8 flex items-center justify-center"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2">
+                <History className="w-6 h-6" />
+                Classification History
+              </h2>
+              
+              {(() => {
+                // Get classification history array - check multiple possible locations
+                const history = classificationHistory.length > 0 
+                  ? classificationHistory
+                  : (profile?.classificationHistory || 
+                     profile?.profile?.classificationHistory ||
+                     (profile?.previousClassification ? [profile.previousClassification] : []));
+                
+                // Process each classification in history to calculate missing values
+                const processedHistory = history.map(prevClass => {
+                  if (!prevClass) return null;
+                  
+                  let processed = { ...prevClass };
+                  
+                  // Calculate missing values from metrics if available
+                  if (processed.metrics) {
+                    const metrics = processed.metrics;
+                    const calculatedTotal = parseFloat(metrics.squat || 0) + parseFloat(metrics.bench || 0) + parseFloat(metrics.deadlift || 0);
+                    const calculatedWilks = metrics.bodyweight && calculatedTotal ? (calculatedTotal / parseFloat(metrics.bodyweight)).toFixed(2) : null;
+                    
+                    processed = {
+                      ...processed,
+                      total: (processed.total !== undefined && processed.total !== null) 
+                        ? processed.total 
+                        : (calculatedTotal > 0 ? calculatedTotal : null),
+                      wilks: (processed.wilks !== undefined && processed.wilks !== null)
+                        ? processed.wilks
+                        : calculatedWilks,
+                    };
+                  }
+                  
+                  return processed;
+                }).filter(Boolean);
+                
+                return processedHistory.length > 0 ? (
+                  <div className="space-y-4">
+                    {processedHistory.map((prevClass, index) => (
+                      <div key={index} className="bg-slate-700/50 rounded-lg p-4 border border-slate-600">
+                        <div className="mb-3 pb-3 border-b border-slate-600 flex items-center justify-between">
+                          <div className="text-xs text-slate-400 uppercase tracking-wide">
+                            {index === 0 ? 'Most Recent Classification' : `Classification #${index + 1}`}
+                          </div>
+                          {prevClass.timestamp && (
+                            <div className="text-xs text-slate-500">
+                              {new Date(prevClass.timestamp).toLocaleDateString('en-US', { 
+                                year: 'numeric', 
+                                month: 'short', 
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </div>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                          <div>
+                            <div className="text-sm text-slate-400 mb-1">Fitness Level</div>
+                            <div className={`text-2xl font-bold ${prevClass.level ? getLevelColor(prevClass.level) : 'text-gray-500'}`}>
+                              {prevClass.level || 'N/A'}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-sm text-slate-400 mb-1">Confidence</div>
+                            <div className="text-2xl font-bold text-white">
+                              {prevClass.confidence !== undefined && prevClass.confidence !== null ? `${prevClass.confidence}%` : 'N/A'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <div className="text-sm text-slate-400 mb-1">Total Lift</div>
+                            <div className="text-xl font-semibold text-white">
+                              {prevClass.total !== undefined && prevClass.total !== null ? `${prevClass.total} lbs` : 'N/A'}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-sm text-slate-400 mb-1">Wilks Coefficient</div>
+                            <div className="text-xl font-semibold text-white">
+                              {prevClass.wilks !== undefined && prevClass.wilks !== null ? prevClass.wilks : 'N/A'}
+                            </div>
+                          </div>
+                        </div>
+                        {prevClass.metrics && (
+                          <div className="mt-4 pt-4 border-t border-slate-600">
+                            <div className="text-sm text-slate-400 mb-2">Metrics Used</div>
+                            <div className="grid grid-cols-2 gap-2 text-sm">
+                              <div className="text-slate-300">
+                                <span className="text-slate-400">Squat:</span> {prevClass.metrics.squat || 'N/A'} lbs
+                              </div>
+                              <div className="text-slate-300">
+                                <span className="text-slate-400">Bench:</span> {prevClass.metrics.bench || 'N/A'} lbs
+                              </div>
+                              <div className="text-slate-300">
+                                <span className="text-slate-400">Deadlift:</span> {prevClass.metrics.deadlift || 'N/A'} lbs
+                              </div>
+                              <div className="text-slate-300">
+                                <span className="text-slate-400">Bodyweight:</span> {prevClass.metrics.bodyweight || 'N/A'} lbs
+                              </div>
+                              <div className="text-slate-300">
+                                <span className="text-slate-400">Training Years:</span> {prevClass.metrics.trainingYears || 'N/A'}
+                              </div>
+                              <div className="text-slate-300">
+                                <span className="text-slate-400">Gender:</span> {prevClass.metrics.gender || 'N/A'}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {/* Show current classification for comparison */}
+                    {profile?.classification && (
+                      <div className="bg-slate-700/30 rounded-lg p-4 border border-slate-600/50">
+                        <div className="mb-3 pb-3 border-b border-slate-600/50">
+                          <div className="text-xs text-slate-400 uppercase tracking-wide">Current Classification</div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <div>
+                            <div className="text-sm text-slate-400 mb-1">Level</div>
+                            <div className={`text-lg font-bold ${getLevelColor(profile.classification.level)}`}>
+                              {profile.classification.level}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-sm text-slate-400 mb-1">Confidence</div>
+                            <div className="text-lg font-bold text-white">
+                              {profile.classification.confidence || 'N/A'}%
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-sm text-slate-400 mb-1">Total Lift</div>
+                            <div className="text-lg font-semibold text-white">
+                              {profile.classification.total || 'N/A'} lbs
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-slate-400">
+                    <History className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                    <p>No previous classification history available.</p>
+                    <p className="text-sm mt-2">Reclassify your fitness level to see your previous classification here.</p>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Workout History Modal */}
+        {showWorkoutHistory && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowWorkoutHistory(false)}>
+            <div className="absolute inset-0 bg-black/60"></div>
+            <div className="relative z-10 w-full max-w-4xl bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setShowWorkoutHistory(false)}
+                className="absolute top-3 right-3 text-slate-300 hover:text-white bg-slate-700/60 hover:bg-slate-700 rounded-full w-8 h-8 flex items-center justify-center"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2">
+                <Calendar className="w-6 h-6" />
+                Workout History
+              </h2>
+              
+              {workoutHistory && workoutHistory.length > 0 ? (
+                <div className="space-y-4">
+                  {workoutHistory.map((workout, index) => (
+                    <div key={workout.dayLabel || index} className="bg-slate-700/50 rounded-lg p-4 border border-slate-600">
+                      <div className="flex items-start justify-between mb-3">
+                        <div>
+                          <h3 className="text-lg font-semibold text-white">
+                            {workout.dayLabel || `Workout ${index + 1}`}
+                          </h3>
+                          {workout.completedAt && (
+                            <div className="text-sm text-slate-400 mt-1">
+                              Completed: {new Date(workout.completedAt).toLocaleDateString('en-US', { 
+                                year: 'numeric', 
+                                month: 'long', 
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </div>
+                          )}
+                        </div>
+                        <span className="px-3 py-1 bg-green-600/30 text-green-300 rounded-full text-sm font-semibold">
+                          ✓ Completed
+                        </span>
+                      </div>
+                      
+                      {/* Display exercises with saved weights and notes */}
+                      {workout.exercises && workout.exercises.length > 0 ? (
+                        <div className="mt-4 space-y-3">
+                          <div className="text-sm font-semibold text-slate-300 mb-2">Exercises:</div>
+                          <div className="space-y-2">
+                            {workout.exercises.map((exercise, exerciseIdx) => {
+                              const exerciseInput = workout.inputs?.[exerciseIdx] || 
+                                                   workout.inputs?.[String(exerciseIdx)] || 
+                                                   {};
+                              const hasWeight = exerciseInput.weight && exerciseInput.weight.toString().trim() !== '';
+                              const hasNotes = exerciseInput.notes && exerciseInput.notes.toString().trim() !== '';
+                              
+                              return (
+                                <div key={exerciseIdx} className="bg-slate-600/30 rounded-lg p-3 border border-slate-600/50">
+                                  <div className="flex items-start justify-between">
+                                    <div className="flex-1">
+                                      <div className="font-medium text-white">{exercise}</div>
+                                      {(hasWeight || hasNotes) ? (
+                                        <div className="mt-2 space-y-1 text-sm">
+                                          {hasWeight && (
+                                            <div className="text-slate-300">
+                                              <span className="text-slate-400">Weight:</span> {exerciseInput.weight}
+                                            </div>
+                                          )}
+                                          {hasNotes && (
+                                            <div className="text-slate-300">
+                                              <span className="text-slate-400">Notes:</span> {exerciseInput.notes}
+                                            </div>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <div className="mt-1 text-xs text-slate-500">No weights or notes recorded</div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-4 text-sm text-slate-400">
+                          Exercise details not available for this workout day.
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-slate-400">
+                  <Calendar className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                  <p>No completed workouts yet.</p>
+                  <p className="text-sm mt-2">Complete workout days from your program to see them here.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Past Programs Modal */}
+        {showPastPrograms && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowPastPrograms(false)}>
+            <div className="absolute inset-0 bg-black/60"></div>
+            <div className="relative z-10 w-full max-w-4xl bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setShowPastPrograms(false)}
+                className="absolute top-3 right-3 text-slate-300 hover:text-white bg-slate-700/60 hover:bg-slate-700 rounded-full w-8 h-8 flex items-center justify-center"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2">
+                <Archive className="w-6 h-6" />
+                Past Programs
+              </h2>
+              
+              {pastPrograms && pastPrograms.length > 0 ? (
+                <div className="space-y-4">
+                  {pastPrograms.map((program, index) => (
+                    <div 
+                      key={program.id || index} 
+                      onClick={() => handleLoadPastProgram(program)}
+                      className="bg-slate-700/50 rounded-lg p-4 border border-slate-600 cursor-pointer hover:bg-slate-700/70 hover:border-blue-500/50 transition-all duration-200"
+                    >
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-2">
+                            <h3 className="text-lg font-semibold text-white">
+                              {program.name || program.id || `Program ${index + 1}`}
+                            </h3>
+                            {program.isCurrent && (
+                              <span className="px-2 py-1 bg-blue-600/30 text-blue-300 rounded-full text-xs font-semibold">
+                                Current
+                              </span>
+                            )}
+                          </div>
+                          {program.description && (
+                            <p className="text-sm text-slate-300 mb-2">{program.description}</p>
+                          )}
+                          <div className="flex flex-wrap gap-4 text-sm text-slate-400">
+                            {program.days && (
+                              <div>
+                                <span className="text-slate-500">Days:</span> {program.days} days/week
+                              </div>
+                            )}
+                            {program.focus && (
+                              <div>
+                                <span className="text-slate-500">Focus:</span> {program.focus}
+                              </div>
+                            )}
+                            {(program.usedAt || program.date) && (
+                              <div>
+                                <span className="text-slate-500">Used:</span>{' '}
+                                {new Date(program.usedAt || program.date).toLocaleDateString('en-US', {
+                                  year: 'numeric',
+                                  month: 'long',
+                                  day: 'numeric'
+                                })}
+                              </div>
+                            )}
+                          </div>
+                          {program.workouts && Object.keys(program.workouts).length > 0 && (
+                            <div className="mt-3 pt-3 border-t border-slate-600">
+                              <div className="text-sm font-semibold text-slate-300 mb-2">
+                                Workout Days: {Object.keys(program.workouts).length}
+                              </div>
+                              <div className="text-xs text-slate-400">
+                                {Object.keys(program.workouts).slice(0, 3).map((day, idx) => (
+                                  <div key={idx} className="mb-1">
+                                    • {day}
+                                  </div>
+                                ))}
+                                {Object.keys(program.workouts).length > 3 && (
+                                  <div className="text-slate-500">
+                                    ... and {Object.keys(program.workouts).length - 3} more
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          <div className="mt-3 pt-3 border-t border-slate-600">
+                            <div className="text-sm text-blue-400 font-medium">
+                              Click to view program and entries →
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-slate-400">
+                  <Archive className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                  <p>No past programs found.</p>
+                  <p className="text-sm mt-2">Programs you've used will appear here.</p>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </div>
