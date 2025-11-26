@@ -1,5 +1,21 @@
-import React, { useState } from 'react';
-import { Activity, Dumbbell, Target, Calendar, AlertCircle, Check, ArrowRight, Download, TrendingUp } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Activity, Dumbbell, Target, Calendar, AlertCircle, Check, ArrowRight, Download, TrendingUp, Save, CheckCircle, ArrowLeft } from 'lucide-react';
+import { 
+  saveProfile as apiSaveProfile, 
+  saveWorkoutPlan, 
+  saveWorkoutEntry,
+  saveWorkoutDayInputs,
+  getWorkoutDayInputs,
+  login as apiLogin, 
+  logout as apiLogout,
+  register as apiRegister,
+  getCurrentUser,
+  getProfile as apiGetProfile,
+  updateProfile as apiUpdateProfile,
+  isAuthenticated,
+  getUser,
+  clearAuth
+} from './api';
 
 const FitnessAIApp = () => {
   const [currentStep, setCurrentStep] = useState(1);
@@ -17,6 +33,458 @@ const FitnessAIApp = () => {
   });
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [profile, setProfile] = useState(null);
+  const [profileForm, setProfileForm] = useState({ name: '' });
+  const [authForm, setAuthForm] = useState({ email: '', password: '', firstName: '', lastName: '' });
+  const [isLoginMode, setIsLoginMode] = useState(true);
+  const [authError, setAuthError] = useState('');
+  const [requireProfile, setRequireProfile] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [workoutInputs, setWorkoutInputs] = useState({});
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [hasSavedProgram, setHasSavedProgram] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [selectedWorkoutDay, setSelectedWorkoutDay] = useState(null);
+  const [completedDays, setCompletedDays] = useState(new Set());
+  const [isResetting, setIsResetting] = useState(false);
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      // Don't auto-load saved program if user is resetting
+      if (isResetting) return;
+      
+      if (isAuthenticated()) {
+        try {
+          // Get user from token
+          const user = getUser();
+          if (user) {
+            setProfile(user);
+            setIsLoggedIn(true);
+            
+            // Fetch latest user data from backend
+            const currentUserResponse = await getCurrentUser();
+            let mergedUser = user;
+            if (currentUserResponse?.success && currentUserResponse?.user) {
+              mergedUser = { ...user, ...currentUserResponse.user };
+              setProfile(mergedUser);
+            }
+            
+            // Try to fetch profile data
+            try {
+              const profileResponse = await apiGetProfile();
+              let mergedProfile = mergedUser;
+              
+              if (profileResponse?.profile || profileResponse?.success) {
+                // Merge profile data with user data
+                const profileData = profileResponse.profile || profileResponse;
+                mergedProfile = { 
+                  ...mergedUser,
+                  ...profileData 
+                };
+                setProfile(mergedProfile);
+              }
+              
+              // Check if user has saved classification, metrics, and workout program
+              // Check both direct properties and nested profile structure
+              const hasClassification = mergedProfile.classification || mergedProfile.profile?.classification;
+              const hasMetrics = mergedProfile.metrics || mergedProfile.profile?.metrics;
+              const hasProgram = mergedProfile.workoutProgram || 
+                                mergedProfile.profile?.workoutProgram ||
+                                mergedProfile.selectedProgramId ||
+                                mergedProfile.profile?.selectedProgramId;
+              
+              if (hasClassification && hasMetrics && hasProgram && !isResetting) {
+                setHasSavedProgram(true);
+                
+                // Get classification
+                const classification = mergedProfile.classification || mergedProfile.profile?.classification;
+                
+                // Get metrics
+                const metrics = mergedProfile.metrics || mergedProfile.profile?.metrics;
+                
+                // Load saved workout program - check multiple possible locations
+                let savedTemplate = mergedProfile.workoutProgram || 
+                                  mergedProfile.profile?.workoutProgram;
+                
+                if (!savedTemplate) {
+                  // Try to reconstruct from saved IDs
+                  const programId = mergedProfile.selectedProgramId || mergedProfile.profile?.selectedProgramId;
+                  const programName = mergedProfile.selectedProgramName || mergedProfile.profile?.selectedProgramName;
+                  
+                  if (programId) {
+                    savedTemplate = {
+                      id: programId,
+                      name: programName || 'Saved Program',
+                    };
+                  }
+                }
+                
+                // Load saved data into results state
+                if (savedTemplate && classification) {
+                  setResults({
+                    classification: classification,
+                    template: savedTemplate
+                  });
+                  
+                  // Set fitness data from saved metrics
+                  if (metrics) {
+                    setFitnessData(metrics);
+                  }
+                  
+                  // Load saved workout day inputs
+                  try {
+                    const savedInputs = mergedProfile.workoutDayInputs || mergedProfile.profile?.workoutDayInputs;
+                    if (savedInputs && typeof savedInputs === 'object') {
+                      setWorkoutInputs(savedInputs);
+                      // Mark days with saved inputs as completed
+                      const completed = new Set();
+                      Object.keys(savedInputs).forEach(dayLabel => {
+                        const dayInputs = savedInputs[dayLabel];
+                        // Check if day has any non-empty inputs
+                        if (dayInputs && typeof dayInputs === 'object') {
+                          const hasInputs = Object.values(dayInputs).some(input => 
+                            input && (input.weight || input.notes)
+                          );
+                          if (hasInputs) {
+                            completed.add(dayLabel);
+                          }
+                        }
+                      });
+                      setCompletedDays(completed);
+                    } else {
+                      // Try to fetch workout day inputs
+                      try {
+                        const inputsResponse = await getWorkoutDayInputs();
+                        if (inputsResponse?.success && inputsResponse?.workoutDayInputs) {
+                          setWorkoutInputs(inputsResponse.workoutDayInputs);
+                          // Mark days with saved inputs as completed
+                          const completed = new Set();
+                          Object.keys(inputsResponse.workoutDayInputs).forEach(dayLabel => {
+                            const dayInputs = inputsResponse.workoutDayInputs[dayLabel];
+                            if (dayInputs && typeof dayInputs === 'object') {
+                              const hasInputs = Object.values(dayInputs).some(input => 
+                                input && (input.weight || input.notes)
+                              );
+                              if (hasInputs) {
+                                completed.add(dayLabel);
+                              }
+                            }
+                          });
+                          setCompletedDays(completed);
+                        }
+                      } catch (err) {
+                        // No saved inputs yet, that's okay
+                        console.log('No saved workout day inputs');
+                      }
+                    }
+                  } catch (err) {
+                    console.log('Error loading workout day inputs:', err);
+                  }
+                  
+                  // Redirect to program view
+                  setCurrentStep(4);
+                  return; // Exit early since we found saved program
+                }
+              }
+            } catch (err) {
+              // Profile might not exist yet, that's okay
+              console.log('Profile not found yet:', err);
+            }
+          }
+        } catch (error) {
+          console.error('Auth check failed:', error);
+          clearAuth();
+          setShowAuthModal(true);
+        }
+      } else {
+        // Check for legacy localStorage profile
+        try {
+          const saved = localStorage.getItem('userProfile');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            // Migrate to new auth system if user exists
+            if (parsed.name) {
+              setShowAuthModal(true);
+            }
+            // Clear legacy storage
+            localStorage.removeItem('userProfile');
+          }
+        } catch (_) {
+          // ignore corrupted storage
+        }
+      }
+    };
+    
+    checkAuth();
+  }, [isResetting]);
+  
+  // Watch for profile changes and redirect if saved program exists
+  useEffect(() => {
+    // Don't auto-redirect if user is resetting
+    if (isResetting) return;
+    
+    if (isLoggedIn && profile && currentStep === 1) {
+      // Check for saved program in profile
+      const hasClassification = profile.classification || profile.profile?.classification;
+      const hasMetrics = profile.metrics || profile.profile?.metrics;
+      const hasProgram = profile.workoutProgram || 
+                        profile.profile?.workoutProgram ||
+                        profile.selectedProgramId ||
+                        profile.profile?.selectedProgramId;
+      
+      if (hasClassification && hasMetrics && hasProgram && !results) {
+        // Load saved data
+        const classification = profile.classification || profile.profile?.classification;
+        const metrics = profile.metrics || profile.profile?.metrics;
+        let savedTemplate = profile.workoutProgram || profile.profile?.workoutProgram;
+        
+        if (!savedTemplate) {
+          const programId = profile.selectedProgramId || profile.profile?.selectedProgramId;
+          const programName = profile.selectedProgramName || profile.profile?.selectedProgramName;
+          if (programId) {
+            savedTemplate = {
+              id: programId,
+              name: programName || 'Saved Program',
+            };
+          }
+        }
+        
+        if (savedTemplate && classification) {
+          setResults({
+            classification: classification,
+            template: savedTemplate
+          });
+          
+          if (metrics) {
+            setFitnessData(metrics);
+          }
+          
+          setHasSavedProgram(true);
+          setCurrentStep(4);
+        }
+      }
+    }
+  }, [profile, isLoggedIn, currentStep, results]);
+  
+  // Auto-redirect from step 3 to step 4 if program is ready
+  useEffect(() => {
+    if (currentStep === 3 && results?.template) {
+      setCurrentStep(4);
+    }
+  }, [currentStep, results]);
+
+  const closeProfileModal = () => {
+    setRequireProfile(false);
+  };
+
+  const closeAuthModal = () => {
+    setShowAuthModal(false);
+    setAuthError('');
+    setAuthForm({ email: '', password: '', firstName: '', lastName: '' });
+  };
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setLoading(true);
+    
+    const email = (authForm.email || '').trim();
+    const password = authForm.password || '';
+    const firstName = (authForm.firstName || '').trim();
+    const lastName = (authForm.lastName || '').trim();
+    
+    if (!email || !password) {
+      setAuthError('Email and password are required');
+      setLoading(false);
+      return;
+    }
+    
+    if (!firstName) {
+      setAuthError('First name is required');
+      setLoading(false);
+      return;
+    }
+    
+    if (!lastName) {
+      setAuthError('Last name is required');
+      setLoading(false);
+      return;
+    }
+    
+    try {
+      // Send profile data directly in registration - backend will create profile
+      const response = await apiRegister(email, password, { 
+        firstName, 
+        lastName 
+      });
+      
+      if (response.success) {
+        setProfile(response.user);
+        setIsLoggedIn(true);
+        setShowAuthModal(false);
+        setAuthForm({ email: '', password: '', firstName: '', lastName: '' });
+        setRequireProfile(false);
+        
+        // Backend should have created the profile during registration
+        // If profile data is returned, use it; otherwise fetch it
+        if (response.user && response.user.profile) {
+          setProfile({ ...response.user, ...response.user.profile });
+        } else {
+          // Try to fetch the profile if not included in response
+          try {
+            const profileResponse = await apiGetProfile();
+            if (profileResponse?.profile) {
+              setProfile(prev => ({ ...prev, ...profileResponse.profile }));
+            }
+          } catch (err) {
+            // Profile might not be created yet, that's okay
+            console.log('Profile will be created when user completes first step');
+          }
+        }
+      } else {
+        setAuthError(response.message || 'Registration failed');
+      }
+    } catch (error) {
+      setAuthError(error.message || 'Registration failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogin = async (e) => {
+    if (e) e.preventDefault();
+    
+    // If not logged in, show auth modal
+    if (!isLoggedIn) {
+      setShowAuthModal(true);
+      return;
+    }
+    
+    // If already logged in but no profile, check backend
+    try {
+      const currentUserResponse = await getCurrentUser();
+      if (currentUserResponse?.success && currentUserResponse?.user) {
+        setProfile(currentUserResponse.user);
+        setIsLoggedIn(true);
+      }
+    } catch (error) {
+      console.error('Error checking user:', error);
+    }
+  };
+
+  const handleLoginSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setLoading(true);
+    
+    const email = (authForm.email || '').trim();
+    const password = authForm.password || '';
+    
+    if (!email || !password) {
+      setAuthError('Email and password are required');
+      setLoading(false);
+      return;
+    }
+    
+    try {
+      const response = await apiLogin(email, password);
+      if (response.success) {
+        let mergedProfile = response.user;
+        setProfile(mergedProfile);
+        setIsLoggedIn(true);
+        setShowAuthModal(false);
+        setAuthForm({ email: '', password: '', firstName: '', lastName: '' });
+        setRequireProfile(false);
+        
+        // Fetch profile data and check for saved program
+        try {
+          const profileResponse = await apiGetProfile();
+          if (profileResponse?.profile || profileResponse?.success) {
+            const profileData = profileResponse.profile || profileResponse;
+            mergedProfile = { ...mergedProfile, ...profileData };
+            setProfile(mergedProfile);
+            
+            // Check if user has saved classification, metrics, and workout program
+            const hasClassification = mergedProfile.classification || mergedProfile.profile?.classification;
+            const hasMetrics = mergedProfile.metrics || mergedProfile.profile?.metrics;
+            const hasProgram = mergedProfile.workoutProgram || 
+                              mergedProfile.profile?.workoutProgram ||
+                              mergedProfile.selectedProgramId ||
+                              mergedProfile.profile?.selectedProgramId;
+            
+            if (hasClassification && hasMetrics && hasProgram) {
+              setHasSavedProgram(true);
+              
+              const classification = mergedProfile.classification || mergedProfile.profile?.classification;
+              const metrics = mergedProfile.metrics || mergedProfile.profile?.metrics;
+              let savedTemplate = mergedProfile.workoutProgram || mergedProfile.profile?.workoutProgram;
+              
+              if (!savedTemplate) {
+                const programId = mergedProfile.selectedProgramId || mergedProfile.profile?.selectedProgramId;
+                const programName = mergedProfile.selectedProgramName || mergedProfile.profile?.selectedProgramName;
+                if (programId) {
+                  savedTemplate = {
+                    id: programId,
+                    name: programName || 'Saved Program',
+                  };
+                }
+              }
+              
+              if (savedTemplate && classification) {
+                setResults({
+                  classification: classification,
+                  template: savedTemplate
+                });
+                
+                if (metrics) {
+                  setFitnessData(metrics);
+                }
+                
+                // Redirect to program view
+                setCurrentStep(4);
+              }
+            }
+          }
+        } catch (err) {
+          console.log('Profile not found yet:', err);
+        }
+      } else {
+        setAuthError(response.message || 'Login failed');
+      }
+    } catch (error) {
+      setAuthError(error.message || 'Login failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await apiLogout();
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+    clearAuth();
+    setIsLoggedIn(false);
+    setProfile(null);
+    setRequireProfile(false);
+    setShowAuthModal(false);
+    setCurrentStep(1);
+    setFitnessData({ gender: '', squat: '', bench: '', deadlift: '', bodyweight: '', trainingYears: '' });
+    setWorkoutPreferences({ trainingDays: 3, goal: 'strength' });
+    setResults(null);
+    setWorkoutInputs({});
+  };
+
+  const handleCreateProfile = async (e) => {
+    e.preventDefault();
+    // This is now handled by registration, but keeping for backward compatibility
+    if (!isLoggedIn) {
+      setShowAuthModal(true);
+      setIsLoginMode(false);
+    }
+  };
 
   // Classification logic (mimics Python K-means classifier)
   const classifyFitnessLevel = (data) => {
@@ -786,17 +1254,39 @@ const FitnessAIApp = () => {
     };
   };
 
-  const handleFitnessSubmit = (e) => {
+  const handleFitnessSubmit = async (e) => {
     e.preventDefault();
     if (!fitnessData.gender) {
       alert('Please select your gender');
       return;
     }
+    if (!isLoggedIn) {
+      setShowAuthModal(true);
+      setIsLoginMode(true);
+      return;
+    }
     setLoading(true);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       const classification = classifyFitnessLevel(fitnessData);
       setResults({ ...results, classification });
+      // Persist profile metrics/classification to backend
+      if (isLoggedIn && profile) {
+        try {
+          const updatedProfile = {
+            ...profile,
+            metrics: { ...fitnessData },
+            classification
+          };
+          await apiUpdateProfile({ 
+            metrics: fitnessData,
+            classification 
+          });
+          setProfile(updatedProfile);
+        } catch (error) {
+          console.error('Error updating profile:', error);
+        }
+      }
       setLoading(false);
       setCurrentStep(2);
     }, 800);
@@ -804,25 +1294,267 @@ const FitnessAIApp = () => {
 
   const handleWorkoutSubmit = (e) => {
     e.preventDefault();
+    if (!isLoggedIn) {
+      setShowAuthModal(true);
+      setIsLoginMode(true);
+      return;
+    }
     setLoading(true);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       const template = assignWorkoutTemplate(
         results.classification.level,
         workoutPreferences,
         parseFloat(fitnessData.trainingYears)
       );
       setResults({ ...results, template });
+      // Persist selected plan to backend
+      if (isLoggedIn && profile) {
+        try {
+          // Save full workout program data to profile
+          await apiUpdateProfile({
+            selectedProgramId: template.id,
+            selectedProgramName: template.name,
+            workoutProgram: template, // Save full program object
+            classification: results.classification, // Save classification
+            metrics: fitnessData // Save metrics
+          });
+          
+          const updatedProfile = {
+            ...profile,
+            selectedProgramId: template.id,
+            selectedProgramName: template.name,
+            workoutProgram: template,
+            classification: results.classification,
+            metrics: fitnessData
+          };
+          setProfile(updatedProfile);
+          setHasSavedProgram(true);
+          
+          // Also save as workout plan
+          try {
+            await saveWorkoutPlan({
+              profileName: profile.name || profile.email,
+              profileId: profile.id || null,
+              programId: template.id,
+              programName: template.name,
+              days: template.days,
+              focus: template.focus,
+              description: template.description,
+              workouts: template.workouts
+            });
+          } catch (_) {
+            // ignore workout plan save errors
+          }
+        } catch (_) {
+          // ignore profile update errors
+        }
+      }
       setLoading(false);
-      setCurrentStep(3);
+      // Redirect to workout program page (step 4) instead of step 3
+      setCurrentStep(4);
     }, 800);
   };
 
-  const handleReset = () => {
+  const setExerciseInput = (day, idx, field, value) => {
+    setWorkoutInputs(prev => {
+      const dayInputs = prev[day] || {};
+      const exInputs = dayInputs[idx] || { weight: '', notes: '' };
+      return {
+        ...prev,
+        [day]: {
+          ...dayInputs,
+          [idx]: { ...exInputs, [field]: value }
+        }
+      };
+    });
+  };
+
+  const handleSaveEntry = async (day, idx, exercise) => {
+    const inputsForDay = workoutInputs[day] || {};
+    const entryInputs = inputsForDay[idx] || { weight: '', notes: '' };
+    const payload = {
+      profileName: profile?.name || null,
+      programId: results?.template?.id || null,
+      programName: results?.template?.name || null,
+      dayLabel: day,
+      exerciseIdx: idx, // Include exercise index for backend storage
+      exerciseLabel: exercise,
+      weight: entryInputs.weight || '',
+      notes: entryInputs.notes || '',
+      timestamp: Date.now()
+    };
+    try {
+      await saveWorkoutEntry(payload);
+      // Optionally provide lightweight UI feedback
+      // noop
+    } catch (_) {
+      // noop
+    }
+  };
+
+  const handleCompleteWorkout = async (dayLabel, exercises) => {
+    if (!isLoggedIn) {
+      setShowAuthModal(true);
+      return;
+    }
+
+    const inputsForDay = workoutInputs[dayLabel] || {};
+
+    try {
+      // Save all entries for all exercises - use bulk save for better performance
+      const dayInputs = {};
+      exercises.forEach((exercise, idx) => {
+        const entryInputs = inputsForDay[idx] || { weight: '', notes: '' };
+        dayInputs[idx] = {
+          weight: entryInputs.weight || '',
+          notes: entryInputs.notes || ''
+        };
+      });
+      
+      // Save all inputs for this day at once
+      try {
+        await saveWorkoutDayInputs({ [dayLabel]: dayInputs });
+      } catch (err) {
+        console.error('Error saving workout day inputs, trying individual saves:', err);
+        // Fallback to individual saves
+        const savePromises = exercises.map((exercise, idx) => {
+          const entryInputs = inputsForDay[idx] || { weight: '', notes: '' };
+          const payload = {
+            profileName: profile?.name || null,
+            programId: results?.template?.id || null,
+            programName: results?.template?.name || null,
+            dayLabel: dayLabel,
+            exerciseIdx: idx,
+            exerciseLabel: exercise,
+            weight: entryInputs.weight || '',
+            notes: entryInputs.notes || '',
+            timestamp: Date.now()
+          };
+          return saveWorkoutEntry(payload);
+        });
+        await Promise.all(savePromises);
+      }
+      
+      // Mark day as completed
+      setCompletedDays(prev => {
+        const updated = new Set(prev);
+        updated.add(dayLabel);
+        return updated;
+      });
+      
+      // Show success feedback
+      alert('Workout completed and saved! 💪');
+      
+      // Redirect back to program overview
+      setSelectedWorkoutDay(null);
+    } catch (error) {
+      console.error('Error saving workout:', error);
+      alert('Error saving workout. Please try again.');
+    }
+  };
+
+
+  const handleSaveProgram = async () => {
+    if (!isLoggedIn) {
+      setShowAuthModal(true);
+      setIsLoginMode(true);
+      return;
+    }
+
+    if (!results?.template || !results?.classification) {
+      alert('No program data to save. Please complete the classification process first.');
+      return;
+    }
+
+    setSaving(true);
+    setSaveSuccess(false);
+
+    try {
+      // Save full workout program data to profile
+      await apiUpdateProfile({
+        selectedProgramId: results.template.id,
+        selectedProgramName: results.template.name,
+        workoutProgram: results.template, // Save full program object
+        classification: results.classification, // Save classification
+        metrics: fitnessData // Save metrics
+      });
+      
+      const updatedProfile = {
+        ...profile,
+        selectedProgramId: results.template.id,
+        selectedProgramName: results.template.name,
+        workoutProgram: results.template,
+        classification: results.classification,
+        metrics: fitnessData
+      };
+      setProfile(updatedProfile);
+      setHasSavedProgram(true);
+      setSaveSuccess(true);
+      
+      // Also save as workout plan
+      try {
+        await saveWorkoutPlan({
+          profileName: profile?.name || profile?.email || 'User',
+          profileId: profile?.id || null,
+          programId: results.template.id,
+          programName: results.template.name,
+          days: results.template.days,
+          focus: results.template.focus,
+          description: results.template.description,
+          workouts: results.template.workouts
+        });
+      } catch (err) {
+        console.error('Error saving workout plan:', err);
+      }
+
+      // Clear success message after 3 seconds
+      setTimeout(() => {
+        setSaveSuccess(false);
+      }, 3000);
+    } catch (error) {
+      console.error('Error saving program:', error);
+      alert('Failed to save program. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = async () => {
+    // Set resetting flag to prevent auto-redirect
+    setIsResetting(true);
+    
+    // Clear all state to start fresh
     setCurrentStep(1);
     setFitnessData({ gender: '', squat: '', bench: '', deadlift: '', bodyweight: '', trainingYears: '' });
     setWorkoutPreferences({ trainingDays: 3, goal: 'strength' });
     setResults(null);
+    setSaveSuccess(false);
+    setWorkoutInputs({});
+    setCompletedDays(new Set());
+    setSelectedWorkoutDay(null);
+    setHasSavedProgram(false);
+    
+    // Clear saved program data from backend to allow fresh start
+    if (isLoggedIn) {
+      try {
+        await apiUpdateProfile({
+          workoutProgram: null,
+          selectedProgramId: null,
+          selectedProgramName: null,
+          classification: null,
+          workoutDayInputs: {}
+        });
+      } catch (err) {
+        console.error('Error clearing saved program:', err);
+        // Continue even if clearing fails
+      }
+    }
+    
+    // Reset the flag after a short delay to allow state to settle
+    setTimeout(() => {
+      setIsResetting(false);
+    }, 100);
   };
 
   const downloadProgram = () => {
@@ -887,9 +1619,568 @@ const FitnessAIApp = () => {
     return advice[level] || advice['Intermediate'];
   };
 
+  // Parse workout day label to extract week, day, and focus
+  const parseWorkoutDay = (dayLabel) => {
+    const weekMatch = dayLabel.match(/Week\s+(\d+)/i);
+    const dayMatch = dayLabel.match(/Day\s+(\d+)/i);
+    const focusMatch = dayLabel.match(/\(([^)]+)\)/);
+    
+    return {
+      week: weekMatch ? parseInt(weekMatch[1]) : null,
+      day: dayMatch ? parseInt(dayMatch[1]) : null,
+      focus: focusMatch ? focusMatch[1] : null,
+      fullLabel: dayLabel
+    };
+  };
+
+  // Get 1RM for a compound lift
+  const getOneRepMax = (exerciseName) => {
+    const exerciseLower = exerciseName.toLowerCase();
+    if (exerciseLower.includes('bench press') || exerciseLower.includes('bench')) {
+      return fitnessData.bench ? parseFloat(fitnessData.bench) : null;
+    } else if (exerciseLower.includes('squat')) {
+      return fitnessData.squat ? parseFloat(fitnessData.squat) : null;
+    } else if (exerciseLower.includes('deadlift')) {
+      return fitnessData.deadlift ? parseFloat(fitnessData.deadlift) : null;
+    } else if (exerciseLower.includes('military press') || exerciseLower.includes('overhead press')) {
+      // Use bench as approximation for military press, or could use a different calculation
+      return fitnessData.bench ? parseFloat(fitnessData.bench) * 0.65 : null; // Approximate 65% of bench
+    }
+    return null;
+  };
+
+  // Round to nearest 5 or 0
+  const roundToNearestFive = (value) => {
+    return Math.round(value / 5) * 5;
+  };
+
+  // Calculate weight from percentage(s)
+  const calculateWeightFromPercentage = (percentageStr, exerciseName, sets) => {
+    const oneRM = getOneRepMax(exerciseName);
+    if (!oneRM) return null;
+
+    // Check if it contains "Max" (case insensitive)
+    const isMaxAttempt = /max/i.test(percentageStr);
+
+    // Handle multiple percentages: "70%, 80%, 90%" or "75%, 85%, Max"
+    if (percentageStr.includes(',')) {
+      const percentages = percentageStr.split(',').map(p => {
+        const trimmed = p.trim();
+        if (/max/i.test(trimmed)) {
+          return 'New 1RM';
+        }
+        const num = parseFloat(trimmed.replace('%', ''));
+        if (isNaN(num)) return trimmed; // Return original if can't parse
+        return roundToNearestFive(oneRM * (num / 100));
+      });
+      return percentages.join(', ');
+    }
+    
+    // Handle range: "70-75%"
+    if (percentageStr.includes('-') && !isMaxAttempt) {
+      const [min, max] = percentageStr.split('-').map(p => parseFloat(p.trim().replace('%', '')));
+      if (!isNaN(min) && !isNaN(max)) {
+        const avg = (min + max) / 2;
+        return roundToNearestFive(oneRM * (avg / 100));
+      }
+    }
+    
+    // Handle single percentage: "70%" or "Max"
+    if (isMaxAttempt) {
+      return 'New 1RM';
+    }
+    
+    const percentage = parseFloat(percentageStr.replace('%', ''));
+    if (isNaN(percentage)) return null;
+    
+    return roundToNearestFive(oneRM * (percentage / 100));
+  };
+
+  // Parse exercise string to extract name, sets, reps, and weight
+  const parseExercise = (exerciseString) => {
+    // Patterns to match:
+    // "Bench Press 4x8-10 (70-75%)"
+    // "Squat 3x3 @70%, 80%, 90%"
+    // "Deadlift 4x6-8"
+    // "Lateral Raises 3x8"
+    // "Bench Press 3x10"
+    // "Bench Press 3x5,3,1 @75%, 85%, Max" (Week 6 format)
+    
+    let exerciseName = exerciseString;
+    let sets = null;
+    let reps = null;
+    let weight = null;
+    let calculatedWeight = null;
+    
+    // Match sets and reps pattern: "4x8-10" or "3x10" or "2xAMRAP" or "3x5,3,1"
+    // Updated to capture comma-separated reps for Week 6
+    const setsRepsMatch = exerciseString.match(/(\d+)x([\d,\-]+|AMRAP)/i);
+    
+    if (setsRepsMatch) {
+      sets = parseInt(setsRepsMatch[1]);
+      reps = setsRepsMatch[2];
+      
+      // Remove sets/reps pattern from exercise name
+      // Updated to handle comma-separated reps
+      exerciseName = exerciseName.replace(/\d+x[\d,\-]+(?:AMRAP)?/i, '').trim();
+    }
+    
+    // Match weight/percentage patterns: "(70-75%)" or "@70%, 80%, 90%" or "@70%"
+    const weightPatterns = [
+      /\(([^)]+)\)/,  // (70-75%)
+      /@([^)]+)/,     // @70%, 80%, 90%
+    ];
+    
+    for (const pattern of weightPatterns) {
+      const match = exerciseString.match(pattern);
+      if (match) {
+        weight = match[1].trim();
+        // Remove weight pattern from exercise name
+        exerciseName = exerciseName.replace(pattern, '').trim();
+        break;
+      }
+    }
+    
+    // Clean up exercise name (remove extra spaces, trailing punctuation)
+    exerciseName = exerciseName.replace(/\s+/g, ' ').replace(/[,\s]+$/, '').trim();
+    
+    // Calculate weight from percentage if it's a compound lift with percentage
+    if (weight && weight.includes('%')) {
+      calculatedWeight = calculateWeightFromPercentage(weight, exerciseName, sets);
+    }
+    
+    return {
+      name: exerciseName || exerciseString,
+      sets: sets || '',
+      reps: reps || '',
+      weight: weight || '',
+      calculatedWeight: calculatedWeight,
+      fullString: exerciseString
+    };
+  };
+
+  // Render individual workout day page
+  const renderWorkoutDay = (dayLabel, exercises) => {
+    const parsed = parseWorkoutDay(dayLabel);
+    const hasCircuitLabels = exercises.some(ex => ex.startsWith('Circuit 1:') || ex.startsWith('Circuit 2:') || ex.startsWith('Circuit A:') || ex.startsWith('Circuit B:'));
+    const isWeightLossCircuit = results?.template?.id && 
+      (results.template.id.includes('WEIGHTLOSS')) && hasCircuitLabels;
+    
+    return (
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl p-6 shadow-2xl text-white">
+          <button
+            onClick={() => setSelectedWorkoutDay(null)}
+            className="mb-4 flex items-center gap-2 text-white/80 hover:text-white transition-colors"
+          >
+            <ArrowLeft className="w-5 h-5" />
+            <span>Back to Program</span>
+          </button>
+          <div className="mb-2">
+            <h2 className="text-3xl font-bold mb-1">
+              {parsed.focus ? `${parsed.focus} Day` : dayLabel}
+            </h2>
+            {parsed.focus && (
+              <p className="text-white/80 text-lg">
+                {parsed.focus.includes('Push') ? 'Upper Body' : 
+                 parsed.focus.includes('Pull') ? 'Upper Body' :
+                 parsed.focus.includes('Leg') ? 'Lower Body' :
+                 'Full Body'}
+              </p>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-4 text-sm">
+            {parsed.week && (
+              <div>
+                <span className="opacity-80">Week:</span> <span className="font-bold">{parsed.week}</span>
+              </div>
+            )}
+            {parsed.day && (
+              <div>
+                <span className="opacity-80">Day:</span> <span className="font-bold">{parsed.day}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Exercises - Table Format */}
+        <div className="bg-slate-800 rounded-2xl p-8 shadow-2xl border border-slate-700">
+          {isWeightLossCircuit ? (
+            // Circuit training display - still use table but grouped by circuit
+            (() => {
+              const circuits = [];
+              let currentCircuit = null;
+              
+              exercises.forEach((exercise, originalIdx) => {
+                if (exercise.startsWith('Circuit 1:') || exercise.startsWith('Circuit 2:') || exercise.startsWith('Circuit A:') || exercise.startsWith('Circuit B:')) {
+                  const colonIndex = exercise.indexOf(': ');
+                  if (colonIndex !== -1) {
+                    const circuitLabel = exercise.substring(0, colonIndex + 1);
+                    const exerciseName = exercise.substring(colonIndex + 2);
+                    
+                    const existingCircuit = circuits.find(c => c.label === circuitLabel);
+                    if (existingCircuit) {
+                      existingCircuit.exercises.push({ name: exerciseName, originalIdx });
+                      currentCircuit = existingCircuit;
+                    } else {
+                      currentCircuit = {
+                        label: circuitLabel,
+                        exercises: [{ name: exerciseName, originalIdx }]
+                      };
+                      circuits.push(currentCircuit);
+                    }
+                  }
+                } else if (currentCircuit) {
+                  currentCircuit.exercises.push({ name: exercise, originalIdx });
+                } else {
+                  if (circuits.length === 0) {
+                    circuits.push({ label: null, exercises: [{ name: exercise, originalIdx }] });
+                  } else {
+                    circuits[circuits.length - 1].exercises.push({ name: exercise, originalIdx });
+                  }
+                }
+              });
+              
+              return (
+                <div className="space-y-8">
+                  {circuits.map((circuit, circuitIdx) => (
+                    <div key={circuitIdx}>
+                      {circuit.label && (
+                        <h4 className="text-xl font-semibold text-yellow-400 mb-4">{circuit.label}</h4>
+                      )}
+                      <div className="overflow-x-auto">
+                        <table className="w-full border-collapse">
+                          <thead>
+                            <tr className="border-b-2 border-slate-600 bg-slate-700/50">
+                              <th className="text-left py-4 px-4 text-slate-200 font-bold uppercase text-sm">EXERCISE</th>
+                              <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">SETS</th>
+                              <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">REPS</th>
+                              <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">WEIGHT</th>
+                              <th className="text-left py-4 px-4 text-slate-200 font-bold uppercase text-sm">NOTES</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {circuit.exercises.map((exerciseData, idx) => {
+                              const exercise = exerciseData.name;
+                              const exerciseIdx = exerciseData.originalIdx;
+                              const parsed = parseExercise(exercise);
+                              
+                              return (
+                                <tr key={idx} className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
+                                  <td className="py-4 px-4 text-white font-semibold">{parsed.name}</td>
+                                  <td className="py-4 px-4 text-center text-slate-200">{parsed.sets || '-'}</td>
+                                  <td className="py-4 px-4 text-center text-slate-200">{parsed.reps || '-'}</td>
+                                  <td className="py-4 px-4">
+                                    <input
+                                      type="text"
+                                      placeholder={parsed.calculatedWeight ? `${parsed.calculatedWeight}${String(parsed.calculatedWeight).includes(',') ? ' lbs per set' : ' lbs'} (${parsed.weight})` : (parsed.weight || "Weight")}
+                                      className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded text-slate-200 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                      value={(workoutInputs[dayLabel]?.[exerciseIdx]?.weight) || (parsed.calculatedWeight ? `${parsed.calculatedWeight} lbs` : '') || parsed.weight || ''}
+                                      onChange={(e) => setExerciseInput(dayLabel, exerciseIdx, 'weight', e.target.value)}
+                                    />
+                                    {parsed.calculatedWeight && !workoutInputs[dayLabel]?.[exerciseIdx]?.weight && (
+                                      <span className="text-xs text-slate-400 block mt-1">
+                                        Calculated: {String(parsed.calculatedWeight).includes(',') ? `${parsed.calculatedWeight} lbs per set` : `${parsed.calculatedWeight} lbs`}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-4 px-4">
+                                    <input
+                                      type="text"
+                                      placeholder="Notes"
+                                      className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                      value={(workoutInputs[dayLabel]?.[exerciseIdx]?.notes) || ''}
+                                      onChange={(e) => setExerciseInput(dayLabel, exerciseIdx, 'notes', e.target.value)}
+                                      onBlur={() => handleSaveEntry(dayLabel, exerciseIdx, exercise)}
+                                    />
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()
+          ) : (
+            // Regular workout display - Table format
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="border-b-2 border-slate-600 bg-slate-700/50">
+                    <th className="text-left py-4 px-4 text-slate-200 font-bold uppercase text-sm">EXERCISE</th>
+                    <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">SETS</th>
+                    <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">REPS</th>
+                    <th className="text-center py-4 px-4 text-slate-200 font-bold uppercase text-sm">WEIGHT</th>
+                    <th className="text-left py-4 px-4 text-slate-200 font-bold uppercase text-sm">NOTES</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exercises.map((exercise, idx) => {
+                    const parsed = parseExercise(exercise);
+                    
+                    return (
+                      <tr key={idx} className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
+                        <td className="py-4 px-4 text-white font-semibold">{parsed.name}</td>
+                        <td className="py-4 px-4 text-center text-slate-200">{parsed.sets || '-'}</td>
+                        <td className="py-4 px-4 text-center text-slate-200">{parsed.reps || '-'}</td>
+                        <td className="py-4 px-4">
+                          <input
+                            type="text"
+                            placeholder={parsed.calculatedWeight ? `${parsed.calculatedWeight}${String(parsed.calculatedWeight).includes(',') ? ' lbs per set' : ' lbs'} (${parsed.weight})` : (parsed.weight || "Weight")}
+                            className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded text-slate-200 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            value={(workoutInputs[dayLabel]?.[idx]?.weight) || (parsed.calculatedWeight ? `${parsed.calculatedWeight} lbs` : '') || parsed.weight || ''}
+                            onChange={(e) => setExerciseInput(dayLabel, idx, 'weight', e.target.value)}
+                          />
+                          {parsed.calculatedWeight && !workoutInputs[dayLabel]?.[idx]?.weight && (
+                            <span className="text-xs text-slate-400 block mt-1">
+                              Calculated: {String(parsed.calculatedWeight).includes(',') ? `${parsed.calculatedWeight} lbs per set` : `${parsed.calculatedWeight} lbs`}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-4 px-4">
+                          <input
+                            type="text"
+                            placeholder="Notes"
+                            className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600 rounded text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            value={(workoutInputs[dayLabel]?.[idx]?.notes) || ''}
+                            onChange={(e) => setExerciseInput(dayLabel, idx, 'notes', e.target.value)}
+                            onBlur={() => handleSaveEntry(dayLabel, idx, exercise)}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Complete Workout Button */}
+        <div className="flex justify-center pt-6">
+          <button
+            onClick={() => handleCompleteWorkout(dayLabel, exercises)}
+            className="flex items-center gap-3 px-8 py-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white font-bold text-lg rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105"
+          >
+            <CheckCircle className="w-6 h-6" />
+            Complete Workout
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const getUserDisplayName = (profile) => {
+    if (!profile) return null;
+    
+    // Try to get full name from firstName and lastName
+    if (profile.firstName || profile.profile?.firstName) {
+      const firstName = profile.firstName || profile.profile?.firstName || '';
+      const lastName = profile.lastName || profile.profile?.lastName || '';
+      if (firstName && lastName) {
+        return `${firstName} ${lastName}`;
+      } else if (firstName) {
+        return firstName;
+      }
+    }
+    
+    // Fallback to name field
+    if (profile.name || profile.profile?.name) {
+      return profile.name || profile.profile?.name;
+    }
+    
+    // Last resort: email (though we prefer not to show this)
+    return profile.email || null;
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-4 sm:p-8">
       <div className="max-w-6xl mx-auto">
+        {/* Authentication Modal (Login/Register) */}
+        {showAuthModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={closeAuthModal}>
+            <div className="absolute inset-0 bg-black/60"></div>
+            <div className="relative z-10 w-full max-w-md bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={closeAuthModal}
+                className="absolute top-3 right-3 text-slate-300 hover:text-white bg-slate-700/60 hover:bg-slate-700 rounded-full w-8 h-8 flex items-center justify-center"
+                aria-label="Close"
+              >
+                ×
+              </button>
+              
+              <h2 className="text-2xl font-bold text-white mb-2">
+                {isLoginMode ? 'Log In' : 'Create Account'}
+              </h2>
+              <p className="text-slate-300 mb-6">
+                {isLoginMode 
+                  ? 'Log in to save your metrics, classification, and selected program.'
+                  : 'Create an account to save your metrics, classification, and selected program.'}
+              </p>
+              
+              {authError && (
+                <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
+                  {authError}
+                </div>
+              )}
+              
+              {isLoginMode ? (
+                <form onSubmit={handleLoginSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-slate-300 mb-2 font-medium">Email</label>
+                    <input
+                      type="email"
+                      value={authForm.email}
+                      onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })}
+                      placeholder="your@email.com"
+                      className="w-full bg-slate-700 text-white border border-slate-600 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                      disabled={loading}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-300 mb-2 font-medium">Password</label>
+                    <input
+                      type="password"
+                      value={authForm.password}
+                      onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+                      placeholder="••••••••"
+                      className="w-full bg-slate-700 text-white border border-slate-600 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                      disabled={loading}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {loading ? 'Logging in...' : 'Log In'}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleRegister} className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-300 mb-2 font-medium">First Name</label>
+                      <input
+                        type="text"
+                        value={authForm.firstName}
+                        onChange={(e) => setAuthForm({ ...authForm, firstName: e.target.value })}
+                        placeholder="e.g., John"
+                        className="w-full bg-slate-700 text-white border border-slate-600 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        required
+                        disabled={loading}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 mb-2 font-medium">Last Name</label>
+                      <input
+                        type="text"
+                        value={authForm.lastName}
+                        onChange={(e) => setAuthForm({ ...authForm, lastName: e.target.value })}
+                        placeholder="e.g., Smith"
+                        className="w-full bg-slate-700 text-white border border-slate-600 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        required
+                        disabled={loading}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-slate-300 mb-2 font-medium">Email</label>
+                    <input
+                      type="email"
+                      value={authForm.email}
+                      onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })}
+                      placeholder="your@email.com"
+                      className="w-full bg-slate-700 text-white border border-slate-600 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                      disabled={loading}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-300 mb-2 font-medium">Password</label>
+                    <input
+                      type="password"
+                      value={authForm.password}
+                      onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+                      placeholder="••••••••"
+                      className="w-full bg-slate-700 text-white border border-slate-600 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                      disabled={loading}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {loading ? 'Creating account...' : 'Create Account'}
+                  </button>
+                </form>
+              )}
+              
+              <div className="mt-4 text-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsLoginMode(!isLoginMode);
+                    setAuthError('');
+                    setAuthForm({ email: '', password: '', firstName: '', lastName: '' });
+                  }}
+                  className="text-blue-400 hover:text-blue-300 text-sm"
+                >
+                  {isLoginMode 
+                    ? "Don't have an account? Sign up" 
+                    : 'Already have an account? Log in'}
+                </button>
+              </div>
+              
+              <button
+                type="button"
+                onClick={closeAuthModal}
+                className="w-full mt-3 bg-slate-700 text-white font-bold py-2 rounded-lg hover:bg-slate-600 transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        
+        {/* Profile Gate Modal (Legacy - shows if requireProfile is set) */}
+        {requireProfile && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={closeProfileModal}>
+            <div className="absolute inset-0 bg-black/60"></div>
+            <div className="relative z-10 w-full max-w-md bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={closeProfileModal}
+                className="absolute top-3 right-3 text-slate-300 hover:text-white bg-slate-700/60 hover:bg-slate-700 rounded-full w-8 h-8 flex items-center justify-center"
+                aria-label="Close"
+              >
+                ×
+              </button>
+              <h2 className="text-2xl font-bold text-white mb-2">Please Log In</h2>
+              <p className="text-slate-300 mb-6">You need to be logged in to continue.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setRequireProfile(false);
+                  setShowAuthModal(true);
+                }}
+                className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition-all"
+              >
+                Log In / Sign Up
+              </button>
+            </div>
+          </div>
+        )}
         {/* Header */}
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-3 mb-4">
@@ -898,9 +2189,50 @@ const FitnessAIApp = () => {
               AI Fitness System
             </h1>
           </div>
+          <div className="flex justify-center mb-3">
+            {!isLoggedIn ? (
+              <button
+                type="button"
+                onClick={handleLogin}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-semibold"
+              >
+                Log In
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded font-semibold"
+              >
+                Log Out
+              </button>
+            )}
+          </div>
           <p className="text-xl text-blue-200">
             Powered by K-means Classification & Decision Tree AI
           </p>
+          {profile && (
+            <div className="mt-3 text-slate-300">
+              {(() => {
+                const displayName = getUserDisplayName(profile);
+                if (displayName) {
+                  return (
+                    <>
+                      <div className="text-lg font-semibold text-white mb-1">
+                        Welcome back, {displayName}! 👋
+                      </div>
+                      {profile.selectedProgramName ? (
+                        <div className="text-sm">
+                          <span className="text-blue-300">Active Program:</span> {profile.selectedProgramName}
+                        </div>
+                      ) : null}
+                    </>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+          )}
         </div>
 
         {/* Progress Stepper */}
@@ -922,10 +2254,21 @@ const FitnessAIApp = () => {
             <ArrowRight className="w-6 h-6 text-gray-500" />
             <div className={`flex items-center gap-2 ${currentStep >= 3 ? 'text-blue-400' : 'text-gray-500'}`}>
               <div className={`w-10 h-10 rounded-full flex items-center justify-center ${currentStep >= 3 ? 'bg-blue-500' : 'bg-gray-700'}`}>
-                3
+                {currentStep > 3 ? <Check className="w-6 h-6" /> : '3'}
               </div>
               <span className="hidden sm:block font-medium">Get Program</span>
             </div>
+            {currentStep >= 4 && (
+              <>
+                <ArrowRight className="w-6 h-6 text-gray-500" />
+                <div className="flex items-center gap-2 text-blue-400">
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center bg-blue-500">
+                    <Check className="w-6 h-6" />
+                  </div>
+                  <span className="hidden sm:block font-medium">My Program</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -1146,12 +2489,21 @@ const FitnessAIApp = () => {
           </div>
         )}
 
-        {/* Step 3: Results */}
+        {/* Step 3: Results (Temporary - redirects immediately to step 4) */}
         {currentStep === 3 && results?.template && (
+          <div className="text-center py-8">
+            <p className="text-white text-lg">Loading your workout program...</p>
+          </div>
+        )}
+        
+        {/* Step 4: Workout Program Page */}
+        {currentStep === 4 && results?.template && !selectedWorkoutDay && (
           <div className="space-y-6">
             {/* Summary Card */}
             <div className="bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl p-8 shadow-2xl text-white">
-              <h2 className="text-3xl font-bold mb-4">🎉 Your Personalized Program is Ready!</h2>
+              <h2 className="text-3xl font-bold mb-4">
+                {hasSavedProgram ? '🏋️ Your Workout Program' : '🎉 Your Personalized Program is Ready!'}
+              </h2>
               <div className="grid sm:grid-cols-3 gap-4">
                 <div>
                   <div className="text-sm opacity-80">Fitness Level</div>
@@ -1177,92 +2529,82 @@ const FitnessAIApp = () => {
                 <div className="text-white font-medium">{results.template.focus}</div>
               </div>
 
-              {/* Workout Schedule */}
+              {/* Workout Schedule - Organized by Week */}
               <h4 className="text-2xl font-bold text-white mb-4">📅 Weekly Workout Schedule</h4>
-              <div className="space-y-4">
-                {Object.entries(results.template.workouts).map(([day, exercises]) => {
-                  // Special handling for beginner weight loss circuit training
-                  // Check if exercises contain circuit labels (not just day name)
-                  const hasCircuitLabels = exercises.some(ex => ex.startsWith('Circuit 1:') || ex.startsWith('Circuit 2:') || ex.startsWith('Circuit A:') || ex.startsWith('Circuit B:'));
-                  const isWeightLossCircuit = (results.template.id === 'BEG_WEIGHTLOSS_3DAY' || results.template.id === 'BEG_WEIGHTLOSS_4DAY' || results.template.id === 'BEG_WEIGHTLOSS_5DAY' || results.template.id === 'INT_WEIGHTLOSS_3DAY' || results.template.id === 'INT_WEIGHTLOSS_4DAY' || results.template.id === 'INT_WEIGHTLOSS_5DAY') && hasCircuitLabels;
-                  
-                  if (isWeightLossCircuit) {
-                    // Group exercises by circuit
-                    const circuits = [];
-                    let currentCircuit = null;
+              <div className="space-y-6">
+                {(() => {
+                  // Group workouts by week
+                  const workoutsByWeek = {};
+                  Object.entries(results.template.workouts).forEach(([day, exercises]) => {
+                    const parsed = parseWorkoutDay(day);
+                    const weekNum = parsed.week || 0; // Use 0 for workouts without week number
                     
-                    exercises.forEach((exercise) => {
-                      if (exercise.startsWith('Circuit 1:') || exercise.startsWith('Circuit 2:') || exercise.startsWith('Circuit A:') || exercise.startsWith('Circuit B:')) {
-                        // Extract circuit label and exercise - split only on first occurrence
-                        const colonIndex = exercise.indexOf(': ');
-                        if (colonIndex !== -1) {
-                          const circuitLabel = exercise.substring(0, colonIndex + 1); // Include the colon
-                          const exerciseName = exercise.substring(colonIndex + 2); // Skip ': '
-                          
-                          // Check if a circuit with this label already exists
-                          const existingCircuit = circuits.find(c => c.label === circuitLabel);
-                          if (existingCircuit) {
-                            // Add exercise to existing circuit
-                            existingCircuit.exercises.push(exerciseName);
-                            currentCircuit = existingCircuit;
-                          } else {
-                            // Create new circuit
-                            currentCircuit = {
-                              label: circuitLabel,
-                              exercises: [exerciseName]
-                            };
-                            circuits.push(currentCircuit);
-                          }
-                        }
-                      } else if (currentCircuit) {
-                        currentCircuit.exercises.push(exercise);
-                      } else {
-                        // Fallback if no circuit label found
-                        if (circuits.length === 0) {
-                          circuits.push({ label: null, exercises: [exercise] });
-                        } else {
-                          circuits[circuits.length - 1].exercises.push(exercise);
-                        }
-                      }
+                    if (!workoutsByWeek[weekNum]) {
+                      workoutsByWeek[weekNum] = [];
+                    }
+                    workoutsByWeek[weekNum].push({ day, exercises, parsed });
+                  });
+                  
+                  // Sort weeks and days within each week
+                  const sortedWeeks = Object.keys(workoutsByWeek)
+                    .map(Number)
+                    .sort((a, b) => a - b);
+                  
+                  sortedWeeks.forEach(week => {
+                    workoutsByWeek[week].sort((a, b) => {
+                      const dayA = a.parsed.day || 0;
+                      const dayB = b.parsed.day || 0;
+                      return dayA - dayB;
                     });
-                    
-                    return (
-                  <div key={day} className="bg-slate-700 rounded-lg p-6">
-                    <h5 className="text-xl font-bold text-blue-400 mb-3">{day}</h5>
-                        {circuits.map((circuit, circuitIdx) => (
-                          <div key={circuitIdx} className={circuitIdx > 0 ? 'mt-4' : ''}>
-                            {circuit.label && (
-                              <h6 className="text-lg font-semibold text-yellow-400 mb-2">{circuit.label}</h6>
-                            )}
-                    <ul className="space-y-2">
-                              {circuit.exercises.map((exercise, idx) => (
-                        <li key={idx} className="flex items-start gap-2 text-slate-300">
-                          <Check className="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" />
-                          <span>{exercise}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-                      </div>
-                    );
-                  }
+                  });
                   
-                  // Default rendering for other programs
-                  return (
-                    <div key={day} className="bg-slate-700 rounded-lg p-6">
-                      <h5 className="text-xl font-bold text-blue-400 mb-3">{day}</h5>
-                      <ul className="space-y-2">
-                        {exercises.map((exercise, idx) => (
-                          <li key={idx} className="flex items-start gap-2 text-slate-300">
-                            <Check className="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" />
-                            <span>{exercise}</span>
-                          </li>
-                        ))}
-                      </ul>
+                  return sortedWeeks.map(weekNum => (
+                    <div key={weekNum} className="space-y-3">
+                      <h5 className="text-xl font-bold text-blue-400">
+                        {weekNum > 0 ? `Week ${weekNum}` : 'Workouts'}
+                      </h5>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+                        {workoutsByWeek[weekNum].map(({ day, exercises, parsed }) => {
+                          const isCompleted = completedDays.has(day);
+                          return (
+                            <button
+                              key={day}
+                              onClick={() => setSelectedWorkoutDay({ day, exercises })}
+                              className={`rounded-lg p-4 text-left transition-all border ${
+                                isCompleted
+                                  ? 'bg-green-600/20 hover:bg-green-600/30 border-green-500'
+                                  : 'bg-slate-700 hover:bg-slate-600 border-slate-600 hover:border-blue-500'
+                              }`}
+                            >
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between">
+                                  {parsed.day && (
+                                    <div className={`font-bold text-lg ${isCompleted ? 'text-green-300' : 'text-white'}`}>
+                                      Day {parsed.day}
+                                    </div>
+                                  )}
+                                  {!parsed.day && (
+                                    <div className={`font-bold text-base ${isCompleted ? 'text-green-300' : 'text-white'}`}>
+                                      {day}
+                                    </div>
+                                  )}
+                                  {isCompleted && (
+                                    <CheckCircle className="w-6 h-6 text-green-400 flex-shrink-0" />
+                                  )}
+                                </div>
+                                {parsed.focus && (
+                                  <div className={`text-sm ${isCompleted ? 'text-green-200' : 'text-slate-300'}`}>
+                                    Focus: {parsed.focus}
+                                  </div>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  );
-                })}
+                  ));
+                })()}
               </div>
             </div>
 
@@ -1285,22 +2627,30 @@ const FitnessAIApp = () => {
             </div>
 
             {/* Action Buttons */}
-            <div className="flex gap-4">
-              <button
-                onClick={downloadProgram}
-                className="flex-1 bg-green-600 text-white font-bold py-4 rounded-lg hover:bg-green-700 transition-all shadow-lg flex items-center justify-center gap-2"
-              >
-                <Download className="w-5 h-5" />
-                Download Program
-              </button>
-              <button
-                onClick={handleReset}
-                className="flex-1 bg-slate-700 text-white font-bold py-4 rounded-lg hover:bg-slate-600 transition-all flex items-center justify-center gap-2"
-              >
-                Start Over
-              </button>
+            <div className="space-y-4">
+              {/* Download and Reset Buttons */}
+              <div className="flex gap-4">
+                <button
+                  onClick={downloadProgram}
+                  className="flex-1 bg-green-600 text-white font-bold py-4 rounded-lg hover:bg-green-700 transition-all shadow-lg flex items-center justify-center gap-2"
+                >
+                  <Download className="w-5 h-5" />
+                  Download Program
+                </button>
+                <button
+                  onClick={handleReset}
+                  className="flex-1 bg-slate-700 text-white font-bold py-4 rounded-lg hover:bg-slate-600 transition-all flex items-center justify-center gap-2"
+                >
+                  Start Over
+                </button>
+              </div>
             </div>
           </div>
+        )}
+
+        {/* Individual Workout Day Page */}
+        {currentStep === 4 && results?.template && selectedWorkoutDay && (
+          renderWorkoutDay(selectedWorkoutDay.day, selectedWorkoutDay.exercises)
         )}
       </div>
     </div>
