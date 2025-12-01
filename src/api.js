@@ -168,6 +168,12 @@ export async function getProfile() {
   });
 }
 
+export async function getProfileSummary() {
+  return request('/api/profile/summary', {
+    method: 'GET'
+  });
+}
+
 export async function updateProfile(profile) {
   return request('/api/profile', {
     method: 'PUT',
@@ -312,6 +318,31 @@ export async function saveWorkoutEntry(entry) {
   }
 }
 
+// Programs API
+export async function testProgramsEndpoint() {
+  return request('/api/programs/test', {
+    method: 'GET'
+  });
+}
+
+export async function getPastPrograms() {
+  return request('/api/programs/past', {
+    method: 'GET'
+  });
+}
+
+export async function getPastProgramByIndex(index) {
+  return request(`/api/programs/past/${index}`, {
+    method: 'GET'
+  });
+}
+
+export async function getCurrentProgram() {
+  return request('/api/programs/current', {
+    method: 'GET'
+  });
+}
+
 // Utility function
 export function getApiBaseUrl() {
   return API_BASE_URL;
@@ -324,7 +355,7 @@ export function isAuthenticated() {
 // AI Model Classification API
 export async function classifyFitnessLevel(fitnessData) {
   try {
-    const response = await request('/api/classify', {
+    const response = await request('/api/ai/classify', {
       method: 'POST',
       body: {
         gender: fitnessData.gender,
@@ -345,7 +376,57 @@ export async function classifyFitnessLevel(fitnessData) {
   }
 }
 
-// Test backend connection
+export async function assignWorkoutProgram(programData) {
+  return request('/api/ai/assign-workout', {
+    method: 'POST',
+    body: programData
+  });
+}
+
+export async function classifyAndAssign(fitnessData, workoutPreferences) {
+  return request('/api/ai/classify-and-assign', {
+    method: 'POST',
+    body: {
+      ...fitnessData,
+      ...workoutPreferences
+    }
+  });
+}
+
+export async function getCurrentClassification() {
+  return request('/api/ai/classification-current', {
+    method: 'GET'
+  });
+}
+
+export async function getClassificationHistory(params = {}) {
+  const queryParams = new URLSearchParams();
+  
+  if (params.limit) queryParams.append('limit', params.limit);
+  if (params.page) queryParams.append('page', params.page);
+  if (params.level) queryParams.append('level', params.level);
+  
+  const queryString = queryParams.toString();
+  const path = `/api/ai/classification-history${queryString ? `?${queryString}` : ''}`;
+  
+  return request(path, {
+    method: 'GET'
+  });
+}
+
+export async function getClassificationHistoryById(id) {
+  return request(`/api/ai/classification-history/${id}`, {
+    method: 'GET'
+  });
+}
+
+export async function deleteClassificationHistory(id) {
+  return request(`/api/ai/classification-history/${id}`, {
+    method: 'DELETE'
+  });
+}
+
+// Health Check API
 export async function testConnection() {
   try {
     const response = await fetch(`${API_BASE_URL}/api/health`, {
@@ -355,6 +436,20 @@ export async function testConnection() {
       }
     });
     return { connected: true, status: response.status };
+  } catch (error) {
+    return { connected: false, error: error.message };
+  }
+}
+
+export async function healthCheck() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    return { connected: true, status: response.status, data: await response.json().catch(() => null) };
   } catch (error) {
     return { connected: false, error: error.message };
   }

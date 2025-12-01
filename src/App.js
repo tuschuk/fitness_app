@@ -16,7 +16,8 @@ import {
   getWorkouts,
   isAuthenticated,
   getUser,
-  clearAuth
+  clearAuth,
+  getPastPrograms
 } from './api';
 
 const FitnessAIApp = () => {
@@ -282,6 +283,53 @@ const FitnessAIApp = () => {
       setCurrentStep(4);
     }
   }, [currentStep, results]);
+
+  // Fetch past programs on render when logged in
+  useEffect(() => {
+    const fetchPastPrograms = async () => {
+      if (isLoggedIn && isAuthenticated()) {
+        try {
+          const response = await getPastPrograms();
+          console.log('Past programs fetched on render - Full response:', response);
+          console.log('Response type:', typeof response);
+          console.log('Is array?', Array.isArray(response));
+          console.log('Response keys:', response && typeof response === 'object' ? Object.keys(response) : 'N/A');
+          
+          // Handle different response formats
+          let programs = [];
+          if (Array.isArray(response)) {
+            programs = response;
+          } else if (response?.programs && Array.isArray(response.programs)) {
+            programs = response.programs;
+          } else if (response?.pastPrograms && Array.isArray(response.pastPrograms)) {
+            programs = response.pastPrograms;
+          } else if (response?.data) {
+            if (Array.isArray(response.data)) {
+              programs = response.data;
+            } else if (response.data.programs && Array.isArray(response.data.programs)) {
+              programs = response.data.programs;
+            } else if (response.data.pastPrograms && Array.isArray(response.data.pastPrograms)) {
+              programs = response.data.pastPrograms;
+            }
+          } else if (response?.success && response?.data) {
+            programs = Array.isArray(response.data) ? response.data : [];
+          }
+          
+          console.log('Extracted programs array:', programs);
+          console.log('Programs count:', programs.length);
+          setPastPrograms(programs);
+        } catch (error) {
+          console.error('Error fetching past programs on render:', error);
+          console.error('Error details:', error.message, error.stack);
+          setPastPrograms([]);
+        }
+      } else {
+        console.log('Not fetching past programs - isLoggedIn:', isLoggedIn, 'isAuthenticated:', isAuthenticated());
+      }
+    };
+    
+    fetchPastPrograms();
+  }, [isLoggedIn]);
 
   const closeProfileModal = () => {
     setRequireProfile(false);
@@ -601,45 +649,33 @@ const FitnessAIApp = () => {
     // Fetch past programs from backend
     if (isLoggedIn) {
       try {
-        const profileResponse = await apiGetProfile();
-        if (profileResponse?.profile || profileResponse) {
-          const profileData = profileResponse.profile || profileResponse;
-          
-          // Get past programs array from profile
-          const pastProgramsList = profileData.pastPrograms || 
-                                   profileData.profile?.pastPrograms || 
-                                   [];
-          
-          // Also include current program if it exists
-          const programs = [...pastProgramsList];
-          
-          // Check if there's a current program that should be included
-          const currentProgram = profileData.workoutProgram || 
-                                 profileData.profile?.workoutProgram ||
-                                 (profileData.selectedProgramId ? {
-                                   id: profileData.selectedProgramId,
-                                   name: profileData.selectedProgramName || profileData.profile?.selectedProgramName || 'Current Program',
-                                   isCurrent: true
-                                 } : null);
-          
-          if (currentProgram && !programs.some(p => p.id === currentProgram.id)) {
-            programs.unshift({
-              ...currentProgram,
-              isCurrent: true
-            });
+        const response = await getPastPrograms();
+        console.log('Past programs response (handleViewPastPrograms):', response);
+        console.log('Response type:', typeof response);
+        console.log('Is array?', Array.isArray(response));
+        
+        // Handle different response formats
+        let programs = [];
+        if (Array.isArray(response)) {
+          programs = response;
+        } else if (response?.programs && Array.isArray(response.programs)) {
+          programs = response.programs;
+        } else if (response?.pastPrograms && Array.isArray(response.pastPrograms)) {
+          programs = response.pastPrograms;
+        } else if (response?.data) {
+          if (Array.isArray(response.data)) {
+            programs = response.data;
+          } else if (response.data.programs && Array.isArray(response.data.programs)) {
+            programs = response.data.programs;
+          } else if (response.data.pastPrograms && Array.isArray(response.data.pastPrograms)) {
+            programs = response.data.pastPrograms;
           }
-          
-          // Sort by date (most recent first) if dates are available
-          programs.sort((a, b) => {
-            const dateA = a.usedAt || a.date || 0;
-            const dateB = b.usedAt || b.date || 0;
-            return dateB - dateA;
-          });
-          
-          setPastPrograms(programs);
-        } else {
-          setPastPrograms([]);
+        } else if (response?.success && response?.data) {
+          programs = Array.isArray(response.data) ? response.data : [];
         }
+        
+        console.log('Extracted programs:', programs);
+        setPastPrograms(programs);
       } catch (error) {
         console.error('Error fetching past programs:', error);
         setPastPrograms([]);
